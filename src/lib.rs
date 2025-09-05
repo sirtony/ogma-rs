@@ -31,7 +31,7 @@ mod tests {
     #[test]
     fn test_memory_store() -> error::Result<()> {
         let mut store: Store<u64, Person> = Store::new(StoreOptions::new("./test.ogma"));
-        let x = store.set(5, get_person());
+        let x = store.insert(5, get_person());
         assert!(x.is_none());
 
         let first = store.get(&5);
@@ -47,7 +47,7 @@ mod tests {
     fn test_disk_store() -> error::Result<()> {
         const FILE_NAME: &str = "./test.ogma";
         let mut store: Store<u64, Person> = Store::new(StoreOptions::new(FILE_NAME));
-        let x = store.set(5, get_person());
+        let x = store.insert(5, get_person());
         assert!(x.is_none());
 
         store.save()?;

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::hash::Hash;
 use std::io::{Read, Write};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use zstd::{Decoder, Encoder};
 
@@ -91,12 +92,32 @@ impl Default for StoreOptions {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Store<K, V>
 where
-    K: Eq + Hash
+    K: Eq + Hash,
 {
     map: HashMap<K, V>,
 
     #[serde(skip)]
     options: StoreOptions,
+}
+
+impl<K, V> Deref for Store<K, V>
+where
+    K: Eq + Hash,
+{
+    type Target = HashMap<K, V>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl<K, V> DerefMut for Store<K, V>
+where
+    K: Eq + Hash,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.map
+    }
 }
 
 impl<K, V> Store<K, V>
@@ -136,7 +157,7 @@ where
             let mut dec = Decoder::new(file)?;
             let store: Store<K, V> = rmp_serde::decode::from_read(&mut dec)?;
 
-            Ok(Self { options, ..store})
+            Ok(Self { options, ..store })
         }
     }
 
@@ -158,49 +179,5 @@ where
         std::fs::rename(&temp_path, &self.options.path)?;
 
         Ok(())
-    }
-
-    pub fn get(&self, key: &K) -> Option<&V> {
-        self.map.get(key)
-    }
-
-    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-        self.map.get_mut(key)
-    }
-
-    pub fn set(&mut self, key: K, value: V) -> Option<V> {
-        self.map.insert(key, value)
-    }
-
-    pub fn delete(&mut self, key: &K) -> Option<V> {
-        self.map.remove(key)
-    }
-
-    pub fn clear(&mut self) {
-        self.map.clear()
-    }
-
-    pub fn contains_key(&self, key: &K) -> bool {
-        self.map.contains_key(key)
-    }
-
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
-
-    pub fn keys(&self) -> std::collections::hash_map::Keys<'_, K, V> {
-        self.map.keys()
-    }
-
-    pub fn values(&self) -> std::collections::hash_map::Values<'_, K, V> {
-        self.map.values()
-    }
-
-    pub fn values_mut(&mut self) -> std::collections::hash_map::ValuesMut<'_, K, V> {
-        self.map.values_mut()
     }
 }
