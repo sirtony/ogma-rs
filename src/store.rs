@@ -1,6 +1,4 @@
 use crate::error::{Error, Result};
-use brotli2::read::BrotliDecoder;
-use brotli2::write::BrotliEncoder;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -8,32 +6,77 @@ use std::fs::File;
 use std::hash::Hash;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use zstd::{Decoder, Encoder};
 
 const MAGIC_ID: &[u8] = b"OGMA";
-const VERSION: u16 = 2;
-const BROTLI_MIN_LEVEL: u32 = 0;
-const BROTLI_MAX_LEVEL: u32 = 11;
-const BROTLI_DEFAULT_LEVEL: u32 = 5;
+const VERSION: u16 = 3;
+
+#[derive(Debug, Clone, Copy)]
+pub struct CompressionLevel(i32);
+
+/// The compression level to use when writing to disk.
+/// Compression is done with zstandard and any valid compression level can be used.
+/// For simplicity, a set of pre-defined levels are provided.
+impl CompressionLevel {
+    /// The absolute fastest compression level with the lowest ratio. Maps to -7 in zstd.
+    pub const FASTEST: CompressionLevel = CompressionLevel(Self::ZSTD_MIN);
+
+    /// The absolute slowest compression level with the highest ratio. Maps to 22 in zstd.
+    /// Typically only suitable for archival purposes as the memory and CPU overhead are significant
+    /// for comparatively small gains over faster compression levels.
+    pub const SMALLEST_SIZE: CompressionLevel = CompressionLevel(Self::ZSTD_MAX);
+
+    /// The default compression level. Maps to 3 in zstd.
+    /// This is the recommended level for most use cases as it prioritizes speed with a reasonable ratio.
+    pub const DEFAULT: CompressionLevel = Self::FAST;
+
+    /// Faster compression at the cost of higher ratios. Maps to 3 in zstd.
+    /// This is the recommended level for most use cases as it prioritizes speed with a reasonable ratio.
+    pub const FAST: CompressionLevel = CompressionLevel(3);
+
+    /// Balances compression speed and ratio.
+    /// More suitable for cases where size is just as important as speed. Maps to 6 in zstd.
+    pub const BALANCED: CompressionLevel = CompressionLevel(6);
+
+    /// Slower compression speeds but higher compression ratios. Maps to 9 in zstd.
+    /// Recommended for cases where a smaller size is more important than speed.
+    pub const OPTIMAL: CompressionLevel = CompressionLevel(9);
+    pub const ZSTD_MIN: i32 = -7;
+    pub const ZSTD_MAX: i32 = 22;
+
+    /// Use a custom compression level.
+    /// Any valid zstd level is allowed.
+    /// Values outside the range of -7 (very fast) and 22 (very slow) are clamped.
+    pub fn new(level: i32) -> Self {
+        Self(level.clamp(Self::ZSTD_MIN, Self::ZSTD_MAX))
+    }
+}
+
+impl Default for CompressionLevel {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct StoreOptions {
     pub path: PathBuf,
-    pub compression_level: u32,
+    pub compression_level: CompressionLevel,
 }
 
 impl StoreOptions {
     pub fn new(path: impl AsRef<Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
-            compression_level: BROTLI_DEFAULT_LEVEL,
+            compression_level: CompressionLevel::DEFAULT,
         }
     }
 
-    pub fn set_compression_level(&mut self, level: u32) {
-        self.compression_level = level.clamp(BROTLI_MIN_LEVEL, BROTLI_MAX_LEVEL);
+    pub fn set_compression_level(&mut self, level: CompressionLevel) {
+        self.compression_level = level;
     }
 
-    pub fn with_compression_level(mut self, level: u32) -> Self {
+    pub fn with_compression_level(mut self, level: CompressionLevel) -> Self {
         self.set_compression_level(level);
         self
     }
@@ -41,19 +84,8 @@ impl StoreOptions {
 
 impl Default for StoreOptions {
     fn default() -> Self {
-        Self::new("./store.ogma").with_compression_level(BROTLI_DEFAULT_LEVEL)
+        Self::new("")
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Record<K, V>
-where
-    K: Eq + Hash,
-{
-    #[serde(rename = "Key")]
-    pub key: K,
-    #[serde(rename = "Value")]
-    pub value: V,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -61,10 +93,7 @@ struct Document<K, V>
 where
     K: Eq + Hash,
 {
-    // just contains the records for now, but other fields like metadata
-    // could be added later
-    #[serde(rename = "Store")]
-    pub store: Vec<Record<K, V>>,
+    pub store: Vec<(K, V)>,
 }
 
 #[derive(Debug)]
@@ -111,15 +140,15 @@ where
                 });
             }
 
-            let brotli = BrotliDecoder::new(file);
-            let doc: Document<K, V> = serde_json::from_reader(brotli)?;
+            let mut dec = Decoder::new(file)?;
+            let doc: Document<K, V> = rmp_serde::decode::from_read(&mut dec)?;
 
             Ok(Self {
                 map: doc
                     .store
                     .into_iter()
-                    .fold(HashMap::new(), |mut map, record| {
-                        map.insert(record.key, record.value);
+                    .fold(HashMap::new(), |mut map, (k, v)| {
+                        map.insert(k, v);
                         map
                     }),
                 options,
@@ -135,18 +164,16 @@ where
         file.write_u16::<LittleEndian>(VERSION)?;
 
         let doc: Document<&K, &V> = Document {
-            store: self
-                .map
-                .iter()
-                .map(|(key, value)| Record { key, value })
-                .collect(),
+            store: self.map.iter().collect(),
         };
 
-        let mut brotli = BrotliEncoder::new(file, self.options.compression_level);
-        serde_json::to_writer(&mut brotli, &doc)?;
-        brotli.flush()?;
+        let mut enc = Encoder::new(file, self.options.compression_level.0)?;
+        rmp_serde::encode::write(&mut enc, &doc)?;
+        let mut file = enc.finish()?;
 
-        drop(brotli);
+        file.sync_all()?;
+        file.flush()?;
+        drop(file);
 
         std::fs::rename(&temp_path, &self.options.path)?;
 

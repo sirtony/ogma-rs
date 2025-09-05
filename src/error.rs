@@ -14,5 +14,8 @@ pub enum Error {
     WrongVersion { expected: u16, actual: u16 },
 
     #[error(transparent)]
-    Json(#[from] serde_json::Error),
+    Decode(#[from] rmp_serde::decode::Error),
+
+    #[error(transparent)]
+    Encode(#[from] rmp_serde::encode::Error),
 }

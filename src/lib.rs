@@ -1,4 +1,5 @@
 pub mod error;
+mod hash;
 pub mod store;
 
 pub use store::Store;
@@ -6,6 +7,7 @@ pub use store::Store;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::StoreOptions;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -28,7 +30,7 @@ mod tests {
 
     #[test]
     fn test_memory_store() -> error::Result<()> {
-        let mut store: Store<u64, Person> = Store::new(Default::default());
+        let mut store: Store<u64, Person> = Store::new(StoreOptions::new("./test.ogma"));
         let x = store.set(5, get_person());
         assert!(x.is_none());
 
@@ -43,12 +45,13 @@ mod tests {
 
     #[test]
     fn test_disk_store() -> error::Result<()> {
-        let mut store: Store<u64, Person> = Store::new(Default::default());
+        const FILE_NAME: &str = "./test.ogma";
+        let mut store: Store<u64, Person> = Store::new(StoreOptions::new(FILE_NAME));
         let x = store.set(5, get_person());
         assert!(x.is_none());
 
         store.save()?;
-        store = Store::open(Default::default())?;
+        store = Store::open(StoreOptions::new(FILE_NAME))?;
 
         let first = store.get(&5);
         assert!(first.is_some());
