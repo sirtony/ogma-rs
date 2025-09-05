@@ -89,20 +89,13 @@ impl Default for StoreOptions {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Document<K, V>
-where
-    K: Eq + Hash,
-{
-    pub store: Vec<(K, V)>,
-}
-
-#[derive(Debug)]
 pub struct Store<K, V>
 where
-    K: Eq + Hash + Serialize + for<'de> Deserialize<'de>,
-    V: Serialize + for<'de> Deserialize<'de>,
+    K: Eq + Hash
 {
     map: HashMap<K, V>,
+
+    #[serde(skip)]
     options: StoreOptions,
 }
 
@@ -141,18 +134,9 @@ where
             }
 
             let mut dec = Decoder::new(file)?;
-            let doc: Document<K, V> = rmp_serde::decode::from_read(&mut dec)?;
+            let store: Store<K, V> = rmp_serde::decode::from_read(&mut dec)?;
 
-            Ok(Self {
-                map: doc
-                    .store
-                    .into_iter()
-                    .fold(HashMap::new(), |mut map, (k, v)| {
-                        map.insert(k, v);
-                        map
-                    }),
-                options,
-            })
+            Ok(Self { options, ..store})
         }
     }
 
@@ -163,12 +147,8 @@ where
         file.write_all(MAGIC_ID)?;
         file.write_u16::<LittleEndian>(VERSION)?;
 
-        let doc: Document<&K, &V> = Document {
-            store: self.map.iter().collect(),
-        };
-
         let mut enc = Encoder::new(file, self.options.compression_level.0)?;
-        rmp_serde::encode::write(&mut enc, &doc)?;
+        rmp_serde::encode::write(&mut enc, self)?;
         let mut file = enc.finish()?;
 
         file.sync_all()?;
